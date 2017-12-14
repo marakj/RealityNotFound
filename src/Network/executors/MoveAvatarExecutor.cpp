@@ -2,14 +2,10 @@
 #include "Network/Server.h"
 #include "Network/Client.h"
 
-
-#if defined(__linux) || defined(__linux__) || defined(linux)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wuseless-cast"
-#pragma GCC diagnostic ignored "-Wold-style-cast"
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-#endif
-
+#include <leathers/push>
+#include <leathers/useless-cast>
+#include <leathers/old-style-cast>
+#include <leathers/sign-conversion>
 
 namespace Network {
 
@@ -23,7 +19,7 @@ void MoveAvatarExecutor::execute_client()
 
 	*stream >> x >> y >> z >> a >> b >> c >> d >> distance >> id;
 
-	osg::Vec3d center = osg::Vec3d( x-5,y,z );
+	osg::Vec3d center = osg::Vec3d( x,y,z );
 	osg::Quat rotation = osg::Quat( a,b,c,d );
 
 	osg::Vec3d direction = rotation * osg::Vec3d( 0, 0, 1 );
@@ -80,7 +76,7 @@ void MoveAvatarExecutor::execute_server()
 		client->write( block );
 	}
 
-	osg::Vec3d center = osg::Vec3d( x-5,y,z );
+	osg::Vec3d center = osg::Vec3d( x,y,z );
 	osg::Quat rotation = osg::Quat( a,b,c,d );
 
 	osg::Vec3d direction = rotation * osg::Vec3d( 0, 0, 1 );
@@ -105,6 +101,4 @@ void MoveAvatarExecutor::execute_server()
 
 } // namespace Network
 
-#if defined(__linux) || defined(__linux__) || defined(linux)
-#pragma GCC diagnostic pop
-#endif
+#include <leathers/pop>

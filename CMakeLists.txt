@@ -38,6 +38,8 @@ set(CMAKE_CXX_STANDARD 11)
 
 # Warnings for Debug mode
 option( USE_STRICT_COMPILE_WARNINGS "Use strict compilation warnings in debug mode." ON )
+
+cmake_policy(SET CMP0054 NEW)
 if( USE_STRICT_COMPILE_WARNINGS )
 	if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "AppleClang")
 		# using Clang
@@ -137,33 +139,32 @@ endif()
 # Dependencies - Searching external dependencies
 # ------------------------------------------------------------
 
-# ------------------------------ Qt -------------------------------
 set( ALL_SYSTEM_HEADERS )
 set( ALL_COMPILE_DEFINITIONS )
 
+
+# ------------------------------ Qt -------------------------------
 set( CMAKE_AUTOMOC ON )
 set( CMAKE_INCLUDE_CURRENT_DIR ON )
 
+# Find Qt5
+find_package( Qt5
+		CONFIG
+		COMPONENTS
+			Core Widgets Gui OpenGL Sql
+			WebEngine WebEngineWidgets
+			Xml Network
+		QUIET )
 
 # Find Qt4
-find_package( Qt4 REQUIRED )
-set( QT_USE_QTOPENGL 1 )
-set( QT_USE_QTSQL 1 )
-set( QT_USE_QTWEBKIT 1 )
-set( QT_USE_QTXML 1 )
-set( QT_USE_QTNETWORK 1 )
-include( ${QT_USE_FILE} )
-
-if ( NOT Qt4_FOUND )
-    # Find Qt5
-    find_package( Qt5Core QUIET )
-    find_package( Qt5Widgets QUIET )
-    find_package( Qt5OpenGL QUIET )
-    find_package( Qt5Sql QUIET )
-    find_package( Qt5WebEngine QUIET )
-    find_package( Qt5WebEngineWidgets QUIET )
-    find_package( Qt5Xml QUIET )
-    find_package( Qt5Network QUIET )
+if ( NOT Qt5_FOUND )
+	find_package( Qt4 COMPONENTS QtCore QtGui QtOpenGL QtSql QtWebKit QtXml QtNetwork REQUIRED)
+	set( QT_USE_QTOPENGL 1 )
+	set( QT_USE_QTSQL 1 )
+	set( QT_USE_QTWEBKIT 1 )
+	set( QT_USE_QTXML 1 )
+	set( QT_USE_QTNETWORK 1 )
+	include( ${QT_USE_FILE} )
 endif()
 
 if ( Qt5Core_FOUND )
@@ -183,6 +184,10 @@ if( "${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU" AND
 endif()
 
 # ------------------------------ OpenSceneGraph -------------------------------
+
+# Find OpenGL
+find_package( OpenGL REQUIRED)
+
 # Find OpenSceneGraph
 find_package( OpenSceneGraph COMPONENTS
 	osgGA
@@ -202,14 +207,24 @@ find_package( OpenSceneGraph COMPONENTS
 	osgVolume
 	osgWidget
 )
-find_package( osgViewer )
 
-find_package( osgQt )
+message( STATUS "Using OpenSceneGraph version: " ${OPENSCENEGRAPH_VERSION} )
+
+# OpenSceneGraph v3.5.5 removed osgQt (osgQt is now in it's own repository)
+if( ${OPENSCENEGRAPH_VERSION} VERSION_GREATER_EQUAL 3.5.5 )
+	message( "Building osgQt" )
+	set( BUILD_OSGQT TRUE )
+else()
+	message( "Searching for osgQt" )
+	find_package( osgQt )
+	list( APPEND ALL_SYSTEM_HEADERS ${OSGQT_INCLUDE_DIR} )
+endif( )
+
+find_package( osgViewer )
 
 list( APPEND ALL_SYSTEM_HEADERS
 	${OPENSCENEGRAPH_INCLUDE_DIRS}
 	${OSGVIEWER_INCLUDE_DIR}
-	${OSGQT_INCLUDE_DIR}
 )
 
 if( MSVC )
@@ -218,7 +233,12 @@ endif()
 
 # ------------------------------ OpenCV -------------------------------
 # Find OpenCV
-find_package( OpenCV )
+if( APPLE )
+	find_package( OpenCV 2.4.13 PATHS "/usr/local/opt/opencv@2" )
+else()
+	find_package( OpenCV )
+endif()
+
 if( OpenCV_FOUND )
 	if( WIN32 )
 		list( APPEND ALL_COMPILE_DEFINITIONS -DNOMINMAX )
@@ -227,7 +247,7 @@ if( OpenCV_FOUND )
 	#list( APPEND ALL_SYSTEM_HEADERS	${OpenCV_INCLUDE_DIRS} )
 	list( APPEND ALL_COMPILE_DEFINITIONS -DOPENCV_FOUND )
 
-	message( STATUS "OpenCV Found:" )
+	message( STATUS "OpenCV Found: " ${OpenCV_VERSION} )
 	message( STATUS "OpenCV_LIB_DIR=${OpenCV_LIB_DIR}" )
 	message( STATUS "OpenCV_LIB_DIR=${OpenCV_LIBS}" )
 else()
@@ -339,12 +359,16 @@ endif()
 # find PCL
 find_package(PCL 1.8)
 if ( PCL_FOUND )
-        list( APPEND ALL_SYSTEM_HEADERS	${PCL_INCLUDE_DIRS} )
+
+	list( APPEND ALL_COMPILE_DEFINITIONS -DPCL_FOUND )
+
+	list( APPEND ALL_SYSTEM_HEADERS	${PCL_INCLUDE_DIRS} )
+
 	link_directories(${PCL_LIBRARY_DIRS})
 	add_definitions(${PCL_DEFINITIONS})
 	message( STATUS "PCL FOUND" )
 else()
-        message( STATUS "PCL NOT FOUND" )
+		message( STATUS "PCL NOT FOUND" )
 endif()
 
 # ------------------------------ FGLOVE -------------------------------
@@ -518,6 +542,52 @@ if( USE_BUILTIN_DEPENDENCIES )
 		set_target_properties( osgModeling PROPERTIES
 			IMPORTED_LOCATION ${DEP_BIN}/bin/${CMAKE_SHARED_LIBRARY_PREFIX}osgModeling${CMAKE_SHARED_LIBRARY_SUFFIX}
 			IMPORTED_IMPLIB ${DEP_BIN}/lib/${CMAKE_SHARED_LIBRARY_PREFIX}osgModeling${CMAKE_STATIC_LIBRARY_SUFFIX} )
+	endif()
+
+	# Build osgQt
+	if( BUILD_OSGQT )
+		ExternalProject_Add( dep_osgQt
+			PREFIX osgQt
+			SOURCE_DIR ${DEP_SOURCE}/osgQt
+			BINARY_DIR osgQt
+			CMAKE_ARGS
+				-DCMAKE_INSTALL_PREFIX:PATH=${DEP_BIN}
+				-DCMAKE_BUILD_TYPE:STRING=${CMAKE_BUILD_TYPE}
+				-C ${CMAKE_CURRENT_BINARY_DIR}/config.cmake
+			)
+
+		add_library( osgQt SHARED IMPORTED )
+		add_dependencies( osgQt dep_osgQt )
+
+		# osgQt's build system sets different library name based on Qt version
+		if( Qt5Widgets_FOUND )
+			set( OSGQT_NAME osgQt5 )
+		else()
+			set( OSGQT_NAME osgQt )
+		endif()
+
+		# osgQt's build system sets different library name posfixes based on build type
+		# TODO: RelWithDebInfo, MinSizeRel
+		# NOTE: we could use ExternalProject_Get_Property
+		if( CMAKE_BUILD_TYPE MATCHES "Debug" )
+			set( OSGQT_POSTFIX "d" )
+		else()
+			set( OSGQT_POSTFIX "" ) # release
+		endif()
+
+		set_target_properties( osgQt PROPERTIES
+			IMPORTED_LOCATION ${DEP_BIN}/lib/${CMAKE_SHARED_LIBRARY_PREFIX}${OSGQT_NAME}${OSGQT_POSTFIX}${CMAKE_SHARED_LIBRARY_SUFFIX} )
+
+		if( UNIX AND NOT APPLE )
+			set_target_properties( osgQt PROPERTIES
+				IMPORTED_LOCATION ${DEP_BIN}/lib64/${CMAKE_SHARED_LIBRARY_PREFIX}${OSGQT_NAME}${OSGQT_POSTFIX}${CMAKE_SHARED_LIBRARY_SUFFIX} )
+		endif()
+
+		if( WIN32 AND MSVC )
+			set_target_properties( osgQt PROPERTIES
+				IMPORTED_LOCATION ${DEP_BIN}/bin/${CMAKE_SHARED_LIBRARY_PREFIX}${OSGQT_NAME}${OSGQT_POSTFIX}${CMAKE_SHARED_LIBRARY_SUFFIX}
+				IMPORTED_IMPLIB ${DEP_BIN}/lib/${CMAKE_SHARED_LIBRARY_PREFIX}${OSGQT_NAME}${OSGQT_POSTFIX}${CMAKE_STATIC_LIBRARY_SUFFIX} )
+		endif()
 	endif()
 
 
@@ -809,7 +879,19 @@ if( USE_BUILTIN_DEPENDENCIES )
 		CMAKE_ARGS
 			-DCMAKE_INSTALL_PREFIX:PATH=${DEP_BIN}
 			-DCMAKE_BUILD_TYPE:STRING=${CMAKE_BUILD_TYPE}
-		)	
+		)
+
+
+	# Build luacomments
+	ExternalProject_Add ( dep_luacomments
+		PREFIX luacomments
+		SOURCE_DIR ${DEP_SOURCE}/luacomments
+		BINARY_DIR luacomments
+		CMAKE_ARGS
+			-DCMAKE_INSTALL_PREFIX:PATH=${DEP_BIN}
+			-DCMAKE_BUILD_TYPE:STRING=${CMAKE_BUILD_TYPE}
+		)
+
 
 	# Ensure correct order of build (dependencies between external dependencies)
 	if( MSVC OR APPLE )
@@ -835,6 +917,7 @@ if( USE_BUILTIN_DEPENDENCIES )
 	add_dependencies( dep_penlight ${WHICH_LUA} )
 	add_dependencies( dep_mediator_lua ${WHICH_LUA} )
 	add_dependencies( dep_busted ${WHICH_LUA} )
+	add_dependencies( dep_luacomments ${WHICH_LUA} )
 	if( NOT MSVC )
 		add_dependencies( dep_diluculum ${WHICH_LUA} )
 	endif()
@@ -877,7 +960,6 @@ file( GLOB_RECURSE SRC_GITLIB   "src/Repository/Git/GitLib/*.cpp" )
 file( GLOB_RECURSE SRC_SPECIALMATRIX   "src/SpecialMatrix/*.cpp" )
 file( GLOB_RECURSE SRC_CITY		"src/City/*.cpp" )
 file( GLOB_RECURSE SRC_SHAPES	"src/Shapes/*.cpp" )
-file( GLOB_RECURSE SRC_MODULEGRAPH	"src/ModuleGraph/*.cpp" )
 
 # OpenCV
 file( GLOB_RECURSE SRC_OPENCV	"src/OpenCV/*.cpp" )
@@ -948,7 +1030,6 @@ set( SRC
 	${SRC_SPECIALMATRIX}
 	${SRC_CITY}
 	${SRC_SHAPES}
-	${SRC_MODULEGRAPH}
 )
 
 if( OpenCV_FOUND )
@@ -972,8 +1053,8 @@ endif()
 # add Leap
 if( LEAP_FOUND )
 	# WORKAROUND GARAJ comment
-        list( APPEND SRC ${SRC_LEAP} )
-        list( APPEND SRC ${SRC_HANDMODULE} )
+		list( APPEND SRC ${SRC_LEAP} )
+		list( APPEND SRC ${SRC_HANDMODULE} )
 
 endif()
 
@@ -1014,7 +1095,6 @@ file( GLOB_RECURSE HEADER_GITLIB		"include/Repository/Git/GitLib/*.h" )
 file( GLOB_RECURSE HEADER_SPECIALMATRIX		"include/SpecialMatrix/*.h" )
 file( GLOB_RECURSE HEADER_CITY		"include/City/*.h" )
 file( GLOB_RECURSE HEADER_SHAPES	"include/Shapes/*.h" )
-file( GLOB_RECURSE HEADER_MODULEGRAPH	"include/ModuleGraph/*.h" )
 
 # OpenCV
 file( GLOB_RECURSE HEADER_OPENCV	"include/OpenCV/*.h" )
@@ -1086,7 +1166,6 @@ set( INCL
 	${HEADER_SPECIALMATRIX}
 	${HEADER_CITY}
 	${HEADER_SHAPES}
-	${HEADER_MODULEGRAPH}
 )
 
 if( OpenCV_FOUND )
@@ -1109,8 +1188,8 @@ endif()
 
 # LEAP
 if( LEAP_FOUND )
-        list( APPEND INCL ${HEADER_LEAP} )
-        list( APPEND INCL ${HEADER_HANDMODULE} )
+		list( APPEND INCL ${HEADER_LEAP} )
+		list( APPEND INCL ${HEADER_HANDMODULE} )
 endif()
 
 # MOUSE3D
@@ -1139,7 +1218,6 @@ source_group( \\src\\Git "^.*Git/.*$" )
 source_group( \\src\\SpecialMatrix "^.*SpecialMatrix/.*$" )
 source_group( \\src\\City "^.*City/.*$" )
 source_group( \\src\\Shapes "^.*Shapes/.*$" )
-source_group( \\src\\ModuleGraph "^.*ModuleGraph/.*$" )
 
 # Group header files
 source_group( \\headers\\Application "^.*Application/.*h$")
@@ -1162,7 +1240,6 @@ source_group( \\headers\\Git "^.*Git/.*h$" )
 source_group( \\headers\\SpecialMatrix "^.*SpecialMatrix/.*h$" )
 source_group( \\headers\\City "^.*City/.*h$" )
 source_group( \\headers\\Shapes "^.*Shapes/.*h$" )
-source_group( \\headers\\ModuleGraph "^.*ModuleGraph/.*h$" )
 
 if( OpenCV_FOUND )
 	source_group( \\src\\QOpenCV "^.*QOpenCV/.*$" )
@@ -1205,20 +1282,31 @@ endif()
 # 3rd party sources
 # ---------------------------------------------------------------
 
+# noiseutils library
 add_library( noiseutils STATIC dependencies/noiseutils/noiseutils.cpp )
 target_include_directories( noiseutils SYSTEM PUBLIC ${DEPENDENCIES_INCLUDE_DIR}/libnoise dependencies/noiseutils dependencies/libnoise/src )
+
+# mouse3d library
 if ( UNIX AND NOT APPLE )
 	add_library( mouse3d STATIC dependencies/mouse3d/xdrvlib.c )
 	target_include_directories(mouse3d SYSTEM PUBLIC dependencies/mouse3d)
 endif()
+
+# qtcolorpicker library
 add_library( qtcolorpicker STATIC dependencies/qtcolorpicker/qtcolorpicker.cpp )
 target_include_directories( qtcolorpicker SYSTEM PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/qtcolorpicker )
+if (Qt4_FOUND )
+	target_link_libraries( qtcolorpicker Qt4::QtCore)
+endif()
 if ( Qt5Core_FOUND )
 	qt5_use_modules( qtcolorpicker Core Widgets )
 endif()
 
-include_directories( SYSTEM dependencies/parserlib/source )
+# parserlib library
+# include_directories( SYSTEM dependencies/parserlib/source )
 add_library( parserlib STATIC dependencies/parserlib/source/ast.cpp dependencies/parserlib/source/parser.cpp )
+target_include_directories( parserlib SYSTEM PUBLIC dependencies/parserlib/source  )
+
 
 # ---------------------------------------------------------------
 # Build modules as libraries
@@ -1238,21 +1326,22 @@ target_compile_definitions( gitlib PUBLIC -DGITLIB_LIBRARY_STATIC )
 target_compile_options( gitlib PUBLIC ${FLAGS_FOR_DEBUG} )
 
 if ( Qt5Core_FOUND )
-	qt5_use_modules( gitlib Core )
+	target_link_libraries( gitlib Qt5::Core )
 elseif( Qt4_FOUND )
-	target_link_libraries( gitlib ${QT_LIBRARIES} )
+	target_link_libraries( gitlib Qt4::QtCore )
 endif()
 
 # 'cotire' the module
 if( COMMAND cotire )
 	# link gitlib_unity target to all libraries to which gitlib links
 	set_target_properties( gitlib PROPERTIES COTIRE_UNITY_LINK_LIBRARIES_INIT "COPY_UNITY" )
+	set_target_properties(gitlib PROPERTIES COTIRE_ENABLE_PRECOMPILED_HEADER FALSE)
 	cotire( gitlib CONFIGURATIONS Debug Release )
 endif()
 
 #-------------------------------- leap module -------------------------------
 if( LEAP_FOUND )
-        add_library( leaplib STATIC ${SRC_LEAPLIB} ${HEADER_LEAPLIB})
+		add_library( leaplib STATIC ${SRC_LEAPLIB} ${HEADER_LEAPLIB})
 
 	target_include_directories( leaplib
 		SYSTEM PUBLIC
@@ -1265,7 +1354,7 @@ if( LEAP_FOUND )
 	target_compile_options( leaplib PUBLIC ${FLAGS_FOR_DEBUG} )
 
 	if ( Qt5Core_FOUND )
-		qt5_use_modules( leaplib Core )
+		target_link_libraries( leaplib Qt5::Core )
 	elseif( Qt4_FOUND )
 		target_link_libraries( leaplib ${QT_LIBRARIES} )
 	endif()
@@ -1274,6 +1363,7 @@ if( LEAP_FOUND )
 	if( COMMAND cotire )
 		# link leaplib_unity target to all libraries to which leaplib links
 		set_target_properties( leaplib PROPERTIES COTIRE_UNITY_LINK_LIBRARIES_INIT "COPY_UNITY" )
+			set_target_properties(leaplib PROPERTIES COTIRE_ENABLE_PRECOMPILED_HEADER FALSE)
 		cotire( leaplib CONFIGURATIONS Debug Release )
 	endif()
 endif()
@@ -1299,6 +1389,9 @@ endif()
 list( APPEND ALL_SYSTEM_HEADERS ${DEPENDENCIES_INCLUDE_DIR} )
 list( APPEND ALL_SYSTEM_HEADERS ${DEPENDENCIES_INCLUDE_DIR}/libnoise )
 list( APPEND ALL_SYSTEM_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/easyloggingpp/src )
+list( APPEND ALL_SYSTEM_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/qtcolorpicker/ )
+list( APPEND ALL_SYSTEM_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/dependencies/leathers/Source )
+
 
 list( APPEND ALL_SYSTEM_HEADERS include/Leap )
 
@@ -1308,6 +1401,7 @@ endif()
 
 # works:
 include_directories(SYSTEM ${ALL_SYSTEM_HEADERS})
+
 # does not work:
 #list(REMOVE_DUPLICATES ALL_SYSTEM_HEADERS)
 # target_include_directories( ${3DSOFTVIZ_NAME}
@@ -1318,17 +1412,24 @@ include_directories(SYSTEM ${ALL_SYSTEM_HEADERS})
 # )
 
 if ( Qt5Core_FOUND )
-	qt5_use_modules( ${3DSOFTVIZ_NAME}
-		Core
-		Widgets
-		OpenGL
-		Sql
-		WebEngine
-		WebEngineWidgets
-		Xml
-		Network
-		)
+	target_link_libraries( ${3DSOFTVIZ_NAME}
+		Qt5::Core Qt5::Gui Qt5::Widgets Qt5::OpenGL Qt5::Sql Qt5::WebEngine Qt5::WebEngineWidgets Qt5::Xml Qt5::Network
+		${OPENGL_LIBRARIES} )
 endif()
+
+if ( Qt4_FOUND )
+#	target_link_libraries( ${3DSOFTVIZ_NAME} ${QT_LIBRARIES} )
+	target_link_libraries( ${3DSOFTVIZ_NAME}
+		Qt4::QtCore Qt4::QtGui Qt4::QtOpenGL Qt4::QtSql Qt4::QtWebKit Qt4::QtXml Qt4::QtNetwork
+		${OPENGL_LIBRARIES} )
+endif()
+
+if( BUILD_OSGQT )
+	target_link_libraries( ${3DSOFTVIZ_NAME} osgQt )
+else()
+	target_link_libraries( ${3DSOFTVIZ_NAME} ${OSGQT_LIBRARIES} )
+endif()
+
 
 target_link_libraries( ${3DSOFTVIZ_NAME}
 	gitlib
@@ -1340,15 +1441,10 @@ target_link_libraries( ${3DSOFTVIZ_NAME}
 	parserlib
 	${OPENSCENEGRAPH_LIBRARIES}
 	${OSGVIEWER_LIBRARIES}
-	${OSGQT_LIBRARIES}
 )
 
 if( UNIX AND NOT APPLE )
 	target_link_libraries( ${3DSOFTVIZ_NAME} mouse3d )
-endif()
-
-if ( Qt4_FOUND )
-	target_link_libraries( ${3DSOFTVIZ_NAME} ${QT_LIBRARIES} )
 endif()
 
 if( NOT MSVC )
@@ -1382,7 +1478,7 @@ endif()
 #	target_link_libraries( ${3DSOFTVIZ_NAME} ${FGLOVE_LIBRARIES} )
 # endif()
 if ( PCL_FOUND )
-        target_link_libraries( ${3DSOFTVIZ_NAME} ${PCL_COMMON_LIBRARIES} )
+		target_link_libraries( ${3DSOFTVIZ_NAME} ${PCL_LIBRARIES} )
 endif()
 if( LEAP_FOUND )
 	target_link_libraries( ${3DSOFTVIZ_NAME} leaplib ${LEAP_LIBRARIES} )
@@ -1398,10 +1494,11 @@ if( MOUSE3D_FOUND )
 	endif()
 endif()
 
-# 'cotire' the executable
+# 'cotire' the library
 if( COMMAND cotire )
 	# link ${3DSOFTVIZ_NAME}_unity target to all libraries to which ${3DSOFTVIZ_NAME} links
 	set_target_properties( ${3DSOFTVIZ_NAME} PROPERTIES COTIRE_UNITY_LINK_LIBRARIES_INIT "COPY_UNITY" )
+		set_target_properties(${3DSOFTVIZ_NAME} PROPERTIES COTIRE_ENABLE_PRECOMPILED_HEADER FALSE)
 
 	cotire( ${3DSOFTVIZ_NAME} CONFIGURATIONS Debug Release )
 
@@ -1430,7 +1527,7 @@ endif()
 if( USE_BUILTIN_DEPENDENCIES )
 
 	# dependencies of non-unity build
-	add_dependencies( ${3DSOFTVIZ_NAME} libnoise osgModeling gitlib dep_luametrics dep_leg dep_lpeg dep_luafilesystem igloo dep_lualogging dep_StackTracePlus dep_luasocket dep_mobdebug dep_luacov dep_luacheck dep_lua_cliargs dep_luasystem dep_dkjson dep_say dep_luassert dep_lua-term dep_penlight dep_mediator_lua dep_busted )
+	add_dependencies( ${3DSOFTVIZ_NAME} libnoise osgModeling gitlib dep_luametrics dep_leg dep_lpeg dep_luafilesystem igloo dep_lualogging dep_StackTracePlus dep_luasocket dep_mobdebug dep_luacov dep_luacheck dep_lua_cliargs dep_luasystem dep_dkjson dep_say dep_luassert dep_lua-term dep_penlight dep_mediator_lua dep_busted dep_luacomments )
 
 	if( MSVC OR APPLE )
 		add_dependencies( ${3DSOFTVIZ_NAME} dep_lua )
@@ -1448,7 +1545,7 @@ if( USE_BUILTIN_DEPENDENCIES )
 
 	# dependencies of unity build
 	if (COMMAND cotire)
-		add_dependencies( ${3DSOFTVIZ_NAME}_unity libnoise osgModeling gitlib_unity dep_luametrics dep_leg dep_lpeg dep_luafilesystem igloo dep_lualogging dep_StackTracePlus dep_luasocket dep_mobdebug dep_luacov dep_luacheck dep_lua_cliargs dep_luasystem dep_dkjson dep_say dep_luassert dep_lua-term dep_penlight dep_mediator_lua dep_busted )
+		add_dependencies( ${3DSOFTVIZ_NAME}_unity libnoise osgModeling gitlib_unity dep_luametrics dep_leg dep_lpeg dep_luafilesystem igloo dep_lualogging dep_StackTracePlus dep_luasocket dep_mobdebug dep_luacov dep_luacheck dep_lua_cliargs dep_luasystem dep_dkjson dep_say dep_luassert dep_lua-term dep_penlight dep_mediator_lua dep_busted dep_luacomments )
 
 		if( MSVC OR APPLE )
 			add_dependencies( ${3DSOFTVIZ_NAME}_unity dep_lua )
@@ -1472,12 +1569,71 @@ add_executable( ${3DSOFTVIZ_NAME}_app ${INCL}  ${SRC_MAIN} )
 set_target_properties( ${3DSOFTVIZ_NAME}_app PROPERTIES OUTPUT_NAME ${3DSOFTVIZ_NAME} )
 target_compile_options( ${3DSOFTVIZ_NAME}_app PUBLIC ${FLAGS_FOR_DEBUG} )
 target_compile_definitions( ${3DSOFTVIZ_NAME}_app PUBLIC ${ALL_COMPILE_DEFINITIONS} )
-target_link_libraries( ${3DSOFTVIZ_NAME}_app ${3DSOFTVIZ_NAME} )
+
 
 if( COMMAND cotire )
 	set_target_properties( ${3DSOFTVIZ_NAME}_app PROPERTIES COTIRE_UNITY_LINK_LIBRARIES_INIT "COPY_UNITY" )
-
+	target_link_libraries( ${3DSOFTVIZ_NAME}_app ${3DSOFTVIZ_NAME}_unity )
 	cotire( ${3DSOFTVIZ_NAME}_app CONFIGURATIONS Debug Release )
+
+else()
+	target_link_libraries( ${3DSOFTVIZ_NAME}_app ${3DSOFTVIZ_NAME} )
+endif()
+
+# -------------------------------------------------------
+# include-what-you-use
+# -------------------------------------------------------
+option( USE_INCLUDE_WHAT_YOU_USE "Use include-what-you-use." OFF )
+if( USE_INCLUDE_WHAT_YOU_USE )
+
+	find_program( iwyu_path NAMES include-what-you-use iwyu )
+
+	if( NOT iwyu_path )
+		message( STATUS "Could not find the program include-what-you-use" )
+	else()
+		message( STATUS "Using include-what-you-use" )
+
+		set( iwyu_path_and_options
+			${iwyu_path}
+			-Xiwyu
+			--mapping_file=${CMAKE_CURRENT_SOURCE_DIR}/resources/iwyu/mappings/qt5_4.imp
+			# TODO: use multiple mapping files (according to doc multiple --mapping_file can be used, but results in error)
+			# --mapping_file=/Users/kapec/Downloads/include-what-you-use/mappings/libcxx.imp
+			)
+
+		set_property( TARGET gitlib					PROPERTY CXX_INCLUDE_WHAT_YOU_USE ${iwyu_path_and_options} )
+		set_property( TARGET leaplib				PROPERTY CXX_INCLUDE_WHAT_YOU_USE ${iwyu_path_and_options} )
+		set_property( TARGET ${3DSOFTVIZ_NAME}		PROPERTY CXX_INCLUDE_WHAT_YOU_USE ${iwyu_path_and_options} )
+		set_property( TARGET ${3DSOFTVIZ_NAME}_app	PROPERTY CXX_INCLUDE_WHAT_YOU_USE ${iwyu_path_and_options} )
+	endif()
+endif()
+
+
+# -------------------------------------------------------
+# clang-tidy
+# -------------------------------------------------------
+option( USE_CLANG_TIDY "Use clang-tidy." OFF )
+if( USE_CLANG_TIDY )
+	find_program( clang_tidy NAMES clang-tidy PATHS /usr/local/opt/llvm/bin )
+
+	if( NOT clang_tidy )
+		message( STATUS "Could not find the program clang-tidy" )
+	else()
+		message( STATUS "Using clang-tidy" )
+
+		set( clang_tidy_and_options
+			${clang_tidy}
+			# do not use checks:
+			# to many warnings in easylogging++: -cppcoreguidelines-pro-type-vararg,-cppcoreguidelines-pro-bounds-array-to-pointer-decay
+			# include order used in LLVM, not our style: -llvm-include-order
+			-checks=*,-llvm-include-order,-cppcoreguidelines-pro-type-vararg,-cppcoreguidelines-pro-bounds-array-to-pointer-decay
+			)
+
+		set_property( TARGET gitlib					PROPERTY CXX_CLANG_TIDY ${clang_tidy_and_options} )
+		set_property( TARGET leaplib				PROPERTY CXX_CLANG_TIDY ${clang_tidy_and_options} )
+		set_property( TARGET ${3DSOFTVIZ_NAME}		PROPERTY CXX_CLANG_TIDY ${clang_tidy_and_options} )
+		set_property( TARGET ${3DSOFTVIZ_NAME}_app	PROPERTY CXX_CLANG_TIDY ${clang_tidy_and_options} )
+	endif()
 endif()
 
 
@@ -1523,8 +1679,12 @@ endif()
 
 # add custom install_unity target
 if( COMMAND cotire )
+	install(TARGETS ${3DSOFTVIZ_NAME}_app_unity RUNTIME DESTINATION ${INSTALL_BIN} )
+
 	add_custom_target( install_unity
-		COMMAND ${CMAKE_COMMAND} -P "cmake_install.cmake" )
+		COMMAND ${CMAKE_COMMAND} -P "cmake_install.cmake"
+		COMMENT "Install the unity-built project..."
+		WORKING_DIRECTORY ${CMAKE_BINARY_DIR} )
 	add_dependencies( install_unity ${3DSOFTVIZ_NAME}_app_unity )
 	add_dependencies( install_unity gitlib_unity )
 	if( LEAP_FOUND )
@@ -1710,8 +1870,8 @@ target_include_directories( test_gitlib_module 	PUBLIC
 	include/Repository/Git 	)
 target_compile_options( test_gitlib_module PUBLIC ${FLAGS_FOR_DEBUG} )
 if ( Qt5Core_FOUND )
-	qt5_use_modules( test_gitlib_module Core )
-	target_link_libraries( test_gitlib_module gitlib )
+#	qt5_use_modules( test_gitlib_module Core )
+	target_link_libraries( test_gitlib_module Qt5::Core gitlib )
 elseif( Qt4_FOUND )
 	target_link_libraries( test_gitlib_module ${QT_LIBRARIES} gitlib )
 endif()
@@ -1719,6 +1879,7 @@ endif()
 # 'cotire' the executable
 if( COMMAND cotire )
 	set_target_properties( test_gitlib_module PROPERTIES COTIRE_UNITY_LINK_LIBRARIES_INIT "COPY_UNITY" )
+	set_target_properties(test_gitlib_module PROPERTIES COTIRE_ENABLE_PRECOMPILED_HEADER FALSE)
 	cotire( test_gitlib_module CONFIGURATIONS Debug Release )
 endif()
 
